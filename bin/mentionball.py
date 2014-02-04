@@ -5,6 +5,7 @@ from pprint import pprint as pp
 from poll_emic.utils import call_api
 import networkx as nx
 import sys
+import geopy
 
 def get_mention_counts(user):
 
@@ -46,25 +47,53 @@ def data_to_network(data):
     for fromu in data['edges'].keys():
         for tou in data['edges'][fromu].keys():
             G.add_edge(fromu,tou,weight=data['edges'][fromu][tou])
-    
-    pp('Collecting lookup metadata')
-    data['nodes'] = lookup_many(G.nodes())
-    pp("Has metadata for %d users" % len(data.items()))
 
-    for user in G.nodes():
-        pp('Adding node attributes for %s' % user)
+    return G
+
+def lookup_metadata(data, graph):
+    pp('Collecting lookup metadata')
+    data['nodes'] = lookup_many(graph.nodes())
+    pp("Has metadata for %d users" % len(data['nodes'].items()))
+
+    geo = geopy.geocoders.ArcGIS()
+
+    ucount = 0
+    for user in graph.nodes():
+        ucount += 1
+        pp('%d of %d - Adding node attributes for %s' % (ucount, len(data['nodes'].items()), user))
 
         try:
-            G.node[user]['followers_count'] = data['nodes'][user]['followers_count']
+            graph.node[user]['followers_count'] = data['nodes'][user]['followers_count']
+            if 'location' in data['nodes'][user].keys() and data['nodes'][user]['location']!='':
+                #pp(data['nodes'][user])
+                location = data['nodes'][user]['location']
+                # TODO: clean location of unicode characters, in particular u'\xdcT' (U[umlaut]T)
+                # TODO: deal with cases with lat/long preceded by a string, e.g. "iPhone: -37.11111, 100.000000"
+                try:
+                    loc_string, (lat, long) =  geo.geocode(location)
+                    graph.node[user]['loc_string'] = loc_string
+                    graph.node[user]['loc_lat'] = lat
+                    graph.node[user]['loc_long'] = long
+                except geopy.exc.GeocoderTimedOut as e:
+                    pp(data['nodes'][user]['location'])
+                    graph.node[user]['loc_string'] = ''
+                    graph.node[user]['loc_lat'] = ''
+                    graph.node[user]['loc_long'] = ''
+            else:
+                graph.node[user]['loc_string'] = ''
+                graph.node[user]['loc_lat'] = ''
+                graph.node[user]['loc_long'] = ''
         except TwitterHTTPError as e:
             print e
             pp("Removing %s" % user)
-            G.remove_node(user)
+            graph.remove_node(user)
         except KeyError as e:
             pp(lookup(user))
             print e
-
-    return G
+        except TypeError as e:
+            pp(data['nodes'][user]['location'])
+        except UnicodeEncodeError as e:
+            pp(data['nodes'][user]['location'])
 
 def clean_ball(graph):
     for user in graph.nodes():
@@ -100,10 +129,14 @@ def main(args):
         data = get_mentionball(ego,data)
 
     G = data_to_network(data)
+    lookup_metadata(data, G)
 
     clean_ball(G)
 
     nx.write_gexf(G,"mentionball-%s.gexf" % "+".join(args).replace('/','~'))
+
+    print("Data: ")
+    pp(data)
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
